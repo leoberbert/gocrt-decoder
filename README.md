@@ -7,12 +7,34 @@ Ferramenta em Go para ler sessões do SecureCRT, decriptar `Password V2` e expor
 - Go 1.23+
 - Dependências do Fyne para Linux desktop (GTK/OpenGL)
 
-## Executar
+## Baixar e executar (binário pronto)
+
+### Linux
+
+1. Acesse a página de releases:
+   - https://github.com/leoberbert/gocrt-decoder/releases
+2. Baixe `gocrt-decoder-linux-amd64.zip`.
+3. Extraia o arquivo.
+4. No terminal, entre na pasta extraída e execute:
 
 ```bash
-go mod tidy
-go run .
+chmod +x gocrt-decoder
+./gocrt-decoder
 ```
+
+### Windows
+
+1. Acesse a página de releases:
+   - https://github.com/leoberbert/gocrt-decoder/releases
+2. Baixe `gocrt-decoder-windows-amd64.zip`.
+3. Extraia o arquivo.
+4. Execute `gocrt-decoder.exe` com duplo clique.
+
+## Gerar binários no GitHub Actions
+
+- Workflow: `.github/workflows/packages.yml`
+- Build manual: **Actions > Build Packages > Run workflow**
+- Publicação em Releases: acontece ao enviar uma tag `v*` (ex.: `v1.0.0`)
 
 ## Como usar
 
@@ -30,17 +52,6 @@ Colunas exportadas:
 - `port`
 - `password` (decriptado quando possível)
 - `source_file`
-
-## Build de pacotes (GitHub Actions)
-
-- Workflow: `.github/workflows/packages.yml`
-- Gera pacotes `.zip` para:
-  - Linux (`gocrt-decoder-linux-amd64.zip`)
-  - Windows (`gocrt-decoder-windows-amd64.zip`)
-- Pode ser executado de duas formas:
-  - Manualmente via **Actions > Build Packages > Run workflow**
-  - Automaticamente ao criar/push de tag `v*` (ex: `v1.0.0`)
-- Em tags `v*`, também publica os `.zip` na página de **Releases**.
 
 ## Créditos
 
