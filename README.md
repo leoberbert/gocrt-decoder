@@ -2,6 +2,8 @@
 
 Ferramenta em Go para ler sessões do SecureCRT, decriptar `Password V2` e exportar para CSV com GUI em Fyne.
 
+<img width="862" height="572" alt="image" src="https://github.com/user-attachments/assets/52a38c3f-90b6-4a92-8c1a-c39755366626" />
+
 ## Requisitos
 
 - Go 1.23+
