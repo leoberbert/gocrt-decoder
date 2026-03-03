@@ -1,5 +1,12 @@
 # gocrt-decoder
 
+![Downloads](https://img.shields.io/github/downloads/leoberbert/gocrt-decoder/total?style=flat-square&color=D98E04)
+![Lançamento GitHub](https://img.shields.io/github/v/release/leoberbert/gocrt-decoder?include_releases&style=flat-square)
+![Problemas GitHub](https://img.shields.io/github/issues/leoberbert/gocrt-decoder?style=flat-square)
+![Estrelas GitHub](https://img.shields.io/github/stars/leoberbert/gocrt-decoder?style=flat-square)
+![Forks GitHub](https://img.shields.io/github/forks/leoberbert/gocrt-decoder?style=flat-square)
+
+
 Ferramenta em Go para ler sessões do SecureCRT, decriptar `Password V2` e exportar para CSV com GUI em Fyne.
 
 <img width="862" height="572" alt="image" src="https://github.com/user-attachments/assets/52a38c3f-90b6-4a92-8c1a-c39755366626" />
