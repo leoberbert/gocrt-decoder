@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/widget"
@@ -87,7 +91,8 @@ func main() {
 		d.Show()
 	})
 
-	exportBtn := widget.NewButton("Exportar CSV", func() {
+	var exportBtn *widget.Button
+	exportBtn = widget.NewButton("Exportar CSV", func() {
 		sourceDir := strings.TrimSpace(sourceEntry.Text)
 		outputFile := strings.TrimSpace(outputEntry.Text)
 
@@ -105,27 +110,107 @@ func main() {
 			outputEntry.SetText(outputFile)
 		}
 
-		parsed, err := securecrt.ParseSessions(sourceDir, "")
-		if err != nil {
-			dialog.ShowError(err, w)
-			return
-		}
+		sourceEntry.Disable()
+		outputEntry.Disable()
+		browseSourceBtn.Disable()
+		browseOutputBtn.Disable()
+		exportBtn.Disable()
 
-		if len(parsed.Sessions) == 0 {
-			dialog.ShowInformation("Nenhuma sessão", "Nenhuma sessão válida foi encontrada para exportação.", w)
-			return
-		}
+		ctx, cancel := context.WithCancel(context.Background())
+		startedAt := time.Now()
 
-		if err := exporter.WriteSessionsCSV(outputFile, parsed.Sessions); err != nil {
-			dialog.ShowError(err, w)
-			return
-		}
+		progressMessage := binding.NewString()
+		_ = progressMessage.Set("Iniciando processamento...")
+		progressValue := binding.NewFloat()
+		_ = progressValue.Set(0.01)
 
-		message := fmt.Sprintf("Exportação concluída com sucesso.\n\nSessões exportadas: %d\nArquivo: %s", len(parsed.Sessions), outputFile)
-		if len(parsed.Warnings) > 0 {
-			message += fmt.Sprintf("\nAvisos: %d", len(parsed.Warnings))
-		}
-		dialog.ShowInformation("Concluído", message, w)
+		progressLabel := widget.NewLabelWithData(progressMessage)
+		progressBar := widget.NewProgressBarWithData(progressValue)
+		progressBar.Min = 0
+		progressBar.Max = 1
+
+		var cancelBtn *widget.Button
+		cancelBtn = widget.NewButton("Cancelar", func() {
+			cancelBtn.Disable()
+			_ = progressMessage.Set("Cancelando operação...")
+			cancel()
+		})
+
+		progressContent := container.NewVBox(
+			widget.NewLabel("Processando sessões do SecureCRT"),
+			progressLabel,
+			progressBar,
+			cancelBtn,
+		)
+		progressDialog := dialog.NewCustomWithoutButtons("Exportação em andamento", progressContent, w)
+		progressDialog.Resize(fyne.NewSize(560, 180))
+		progressDialog.Show()
+
+		go func() {
+			defer cancel()
+
+			parsed, err := securecrt.ParseSessionsWithProgress(ctx, sourceDir, "", func(p securecrt.ParseProgress) {
+				_ = progressMessage.Set(fmt.Sprintf(
+					"%s\nPastas: %d | Sessões: %d | Decriptadas: %d | Falhas decrypt: %d | Avisos: %d",
+					p.Stage,
+					p.DirectoriesScanned,
+					p.SessionsParsed,
+					p.SessionsDecrypted,
+					p.SessionsDecryptFailed,
+					p.Warnings,
+				))
+				_ = progressValue.Set(0.65)
+			})
+			if err == nil && len(parsed.Sessions) == 0 {
+				err = errors.New("nenhuma sessão válida foi encontrada para exportação")
+			}
+
+			if err == nil {
+				err = exporter.WriteSessionsCSVWithProgress(ctx, outputFile, parsed.Sessions, func(p exporter.ExportProgress) {
+					if p.Total <= 0 {
+						_ = progressValue.Set(0.95)
+						return
+					}
+					value := 0.65 + (0.35 * (float64(p.Written) / float64(p.Total)))
+					if value > 1 {
+						value = 1
+					}
+					_ = progressValue.Set(value)
+					_ = progressMessage.Set(fmt.Sprintf(
+						"Gerando CSV...\nExportadas: %d/%d",
+						p.Written,
+						p.Total,
+					))
+				})
+			}
+
+			duration := time.Since(startedAt)
+
+			sourceEntry.Enable()
+			outputEntry.Enable()
+			browseSourceBtn.Enable()
+			browseOutputBtn.Enable()
+			exportBtn.Enable()
+			progressDialog.Hide()
+
+			if errors.Is(err, context.Canceled) {
+				dialog.ShowInformation("Cancelado", "A exportação foi cancelada pelo usuário.", w)
+				return
+			}
+			if err != nil {
+				dialog.ShowError(err, w)
+				return
+			}
+
+			message := fmt.Sprintf(
+				"Exportação concluída com sucesso.\n\nSessões exportadas: %d\nAvisos: %d\nTempo total: %s\nArquivo: %s",
+				len(parsed.Sessions),
+				len(parsed.Warnings),
+				duration.Round(time.Second),
+				outputFile,
+			)
+			dialog.ShowInformation("Concluído", message, w)
+		}()
 	})
 	exportBtn.Importance = widget.HighImportance
 

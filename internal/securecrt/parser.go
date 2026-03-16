@@ -2,6 +2,7 @@ package securecrt
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -27,7 +28,37 @@ type ParseResult struct {
 	Warnings []string
 }
 
+type ParseProgress struct {
+	Stage                 string
+	CurrentPath           string
+	DirectoriesScanned    int
+	SessionsParsed        int
+	SessionsDecrypted     int
+	SessionsDecryptFailed int
+	Warnings              int
+}
+
+type ParseProgressCallback func(ParseProgress)
+
+type parseState struct {
+	directoriesScanned    int
+	sessionsParsed        int
+	sessionsDecrypted     int
+	sessionsDecryptFailed int
+	warnings              int
+	progress              ParseProgressCallback
+}
+
 func ParseSessions(rootPath string, configPassphrase string) (ParseResult, error) {
+	return ParseSessionsWithProgress(context.Background(), rootPath, configPassphrase, nil)
+}
+
+func ParseSessionsWithProgress(
+	ctx context.Context,
+	rootPath string,
+	configPassphrase string,
+	progress ParseProgressCallback,
+) (ParseResult, error) {
 	info, err := os.Stat(rootPath)
 	if err != nil {
 		return ParseResult{}, fmt.Errorf("failed to stat root directory: %w", err)
@@ -38,14 +69,30 @@ func ParseSessions(rootPath string, configPassphrase string) (ParseResult, error
 
 	result := ParseResult{}
 	visited := map[string]struct{}{}
-	if err := walkDirectory(rootPath, rootPath, "", configPassphrase, visited, &result); err != nil {
+	state := &parseState{progress: progress}
+	state.report("Iniciando leitura das sessões...", rootPath)
+	if err := walkDirectory(ctx, rootPath, rootPath, "", configPassphrase, visited, &result, state); err != nil {
 		return ParseResult{}, err
 	}
+	state.report("Leitura finalizada.", rootPath)
 
 	return result, nil
 }
 
-func walkDirectory(rootDir, dirPath, folderPath, configPassphrase string, visited map[string]struct{}, result *ParseResult) error {
+func walkDirectory(
+	ctx context.Context,
+	rootDir,
+	dirPath,
+	folderPath,
+	configPassphrase string,
+	visited map[string]struct{},
+	result *ParseResult,
+	state *parseState,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	resolved, err := filepath.EvalSymlinks(dirPath)
 	if err != nil {
 		resolved = dirPath
@@ -54,6 +101,8 @@ func walkDirectory(rootDir, dirPath, folderPath, configPassphrase string, visite
 		return nil
 	}
 	visited[resolved] = struct{}{}
+	state.directoriesScanned++
+	state.report("Lendo diretório...", dirPath)
 
 	folderData := parseINI(filepath.Join(dirPath, "__FolderData__.ini"))
 	listedFolders := splitSecureCRTList(folderData["Folder List"])
@@ -61,7 +110,7 @@ func walkDirectory(rootDir, dirPath, folderPath, configPassphrase string, visite
 
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("Could not read directory %s: %v", dirPath, err))
+		addWarning(result, state, fmt.Sprintf("Could not read directory %s: %v", dirPath, err), dirPath)
 		return nil
 	}
 
@@ -85,12 +134,15 @@ func walkDirectory(rootDir, dirPath, folderPath, configPassphrase string, visite
 
 	orderedSessionFiles := make([]string, 0, len(iniFiles))
 	for _, sessionStem := range listedSessions {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		filePath, ok := iniFiles[sessionStem]
 		if !ok {
 			filePath = findCaseInsensitiveINI(dirPath, sessionStem)
 		}
 		if filePath == "" {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("Listed SecureCRT session '%s' was not found under %s.", sessionStem, dirPath))
+			addWarning(result, state, fmt.Sprintf("Listed SecureCRT session '%s' was not found under %s.", sessionStem, dirPath), dirPath)
 			continue
 		}
 		orderedSessionFiles = append(orderedSessionFiles, filePath)
@@ -107,10 +159,13 @@ func walkDirectory(rootDir, dirPath, folderPath, configPassphrase string, visite
 	orderedSessionFiles = append(orderedSessionFiles, remaining...)
 
 	for _, iniPath := range orderedSessionFiles {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		sessionData := parseINI(iniPath)
 		hostname := strings.TrimSpace(sessionData["Hostname"])
 		if hostname == "" {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("Skipped '%s': missing Hostname field.", filepath.Base(iniPath)))
+			addWarning(result, state, fmt.Sprintf("Skipped '%s': missing Hostname field.", filepath.Base(iniPath)), iniPath)
 			continue
 		}
 
@@ -125,7 +180,10 @@ func walkDirectory(rootDir, dirPath, folderPath, configPassphrase string, visite
 		if passwordV2 != "" {
 			decryptedPassword, err = DecryptPasswordV2(passwordV2, configPassphrase)
 			if err != nil {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("Failed to decrypt password for '%s': %v", sessionName, err))
+				addWarning(result, state, fmt.Sprintf("Failed to decrypt password for '%s': %v", sessionName, err), iniPath)
+				state.sessionsDecryptFailed++
+			} else {
+				state.sessionsDecrypted++
 			}
 		}
 
@@ -144,17 +202,22 @@ func walkDirectory(rootDir, dirPath, folderPath, configPassphrase string, visite
 			DecryptedPassword: decryptedPassword,
 			SourceFile:        relFile,
 		})
+		state.sessionsParsed++
+		state.report("Processando sessões...", iniPath)
 	}
 
 	orderedChildDirs := make([]string, 0, len(childDirs))
 	processed := map[string]struct{}{}
 	for _, folderName := range listedFolders {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if childPath, ok := childDirs[folderName]; ok {
 			orderedChildDirs = append(orderedChildDirs, childPath)
 			processed[folderName] = struct{}{}
 			continue
 		}
-		result.Warnings = append(result.Warnings, fmt.Sprintf("Listed SecureCRT folder '%s' was not found under %s.", folderName, dirPath))
+		addWarning(result, state, fmt.Sprintf("Listed SecureCRT folder '%s' was not found under %s.", folderName, dirPath), dirPath)
 	}
 
 	remainingChildNames := make([]string, 0, len(childDirs))
@@ -171,17 +234,44 @@ func walkDirectory(rootDir, dirPath, folderPath, configPassphrase string, visite
 	}
 
 	for _, childDir := range orderedChildDirs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		childName := filepath.Base(childDir)
 		childFolderPath := "/" + childName
 		if folderPath != "" {
 			childFolderPath = folderPath + "/" + childName
 		}
-		if err := walkDirectory(rootDir, childDir, childFolderPath, configPassphrase, visited, result); err != nil {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("Failed to process directory %s: %v", childDir, err))
+		if err := walkDirectory(ctx, rootDir, childDir, childFolderPath, configPassphrase, visited, result, state); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
+			addWarning(result, state, fmt.Sprintf("Failed to process directory %s: %v", childDir, err), childDir)
 		}
 	}
 
 	return nil
+}
+
+func addWarning(result *ParseResult, state *parseState, warning, path string) {
+	result.Warnings = append(result.Warnings, warning)
+	state.warnings++
+	state.report("Aviso durante leitura...", path)
+}
+
+func (s *parseState) report(stage, currentPath string) {
+	if s == nil || s.progress == nil {
+		return
+	}
+	s.progress(ParseProgress{
+		Stage:                 stage,
+		CurrentPath:           currentPath,
+		DirectoriesScanned:    s.directoriesScanned,
+		SessionsParsed:        s.sessionsParsed,
+		SessionsDecrypted:     s.sessionsDecrypted,
+		SessionsDecryptFailed: s.sessionsDecryptFailed,
+		Warnings:              s.warnings,
+	})
 }
 
 func parseINI(path string) map[string]string {
